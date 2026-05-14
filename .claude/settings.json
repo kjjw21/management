@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -Command \"$wshell = New-Object -ComObject WScript.Shell; if ($wshell.AppActivate('Visual Studio Code')) { Start-Sleep -Milliseconds 400; $wshell.SendKeys('^s') }\""
+          }
+        ]
+      }
+    ]
+  }
+}
