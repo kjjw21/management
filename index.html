@@ -512,8 +512,30 @@ body {
 /* ── Utility ── */
 .hidden { display: none; }
   </style>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
+
+<!-- =============================================
+     LOGIN
+     ============================================= -->
+<div id="login-screen" style="position:fixed;inset:0;background:#F7F7F5;display:flex;align-items:center;justify-content:center;z-index:9999;">
+  <div style="background:#fff;border:1px solid #E4E4E7;border-radius:16px;padding:40px;width:360px;box-shadow:0 4px 24px rgba(0,0,0,.08);">
+    <div style="text-align:center;margin-bottom:24px;">
+      <div style="font-size:22px;font-weight:800;color:#18181B;">학생회장 관리시스템</div>
+      <div style="font-size:13px;color:#71717A;margin-top:6px;">로그인이 필요합니다</div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:12px;">
+      <input id="login-email" type="email" placeholder="이메일" autocomplete="username"
+        style="width:100%;padding:11px 13px;border:1px solid #E4E4E7;border-radius:8px;font-size:14px;font-family:inherit;">
+      <input id="login-password" type="password" placeholder="비밀번호" autocomplete="current-password"
+        onkeydown="if(event.key==='Enter')doLogin()"
+        style="width:100%;padding:11px 13px;border:1px solid #E4E4E7;border-radius:8px;font-size:14px;font-family:inherit;">
+      <button onclick="doLogin()" class="btn primary" style="width:100%;justify-content:center;padding:11px;font-size:15px;">로그인</button>
+      <div id="login-error" style="color:#DC2626;font-size:12px;text-align:center;min-height:16px;"></div>
+    </div>
+  </div>
+</div>
 
 <!-- =============================================
      SIDEBAR
@@ -549,7 +571,11 @@ body {
     </div>
   </nav>
 
-  <div class="sidebar-footer"></div>
+  <div class="sidebar-footer">
+    <a class="nav-item" onclick="doLogout()" href="#" style="color:var(--text-3);font-size:13px;">
+      <span class="icon">🚪</span> 로그아웃
+    </a>
+  </div>
 </aside>
 
 
@@ -910,6 +936,13 @@ const CAT_COLORS = {
   '기타':         { bg: '#71717A', text: '#fff' },
 };
 
+// ── Supabase ──────────────────────────────────
+
+const SUPABASE_URL = 'https://aqocucbrmeyamxeyrvbq.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_SWMfkLfHDkYwhgwb705wTQ_iMN5sArn';
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+let currentUser = null;
+
 // ── 상태 ──────────────────────────────────────
 
 let tasks   = [];
@@ -921,20 +954,55 @@ let editingEventId = null;
 let currentPage    = 'dashboard';
 let calYear, calMonth;
 
-// ── 로컬스토리지 ──────────────────────────────
+// ── 데이터 저장/불러오기 (클라우드 + 로컬 백업) ──
 
-function saveAll() {
-  localStorage.setItem('council-tasks',   JSON.stringify(tasks));
-  localStorage.setItem('council-notes',   JSON.stringify(notes));
-  localStorage.setItem('council-reports', JSON.stringify(reports));
-  localStorage.setItem('council-events',  JSON.stringify(events));
+async function saveAll() {
+  // 로컬에도 항상 백업 (오프라인/장애 대비)
+  localStorage.setItem('council-tasks',  JSON.stringify(tasks));
+  localStorage.setItem('council-notes',  JSON.stringify(notes));
+  localStorage.setItem('council-events', JSON.stringify(events));
+
+  if (!currentUser) return;
+  const now = new Date().toISOString();
+  const rows = [
+    { user_id: currentUser.id, key: 'tasks',  value: tasks,  updated_at: now },
+    { user_id: currentUser.id, key: 'notes',  value: notes,  updated_at: now },
+    { user_id: currentUser.id, key: 'events', value: events, updated_at: now },
+  ];
+  const { error } = await sb.from('app_data').upsert(rows, { onConflict: 'user_id,key' });
+  if (error) { console.error('클라우드 저장 오류:', error); toast('⚠️ 클라우드 저장 실패 (로컬에는 저장됨)'); }
 }
 
-function loadAll() {
-  tasks   = JSON.parse(localStorage.getItem('council-tasks')   || '[]');
-  notes   = JSON.parse(localStorage.getItem('council-notes')   || '[]');
-  reports = JSON.parse(localStorage.getItem('council-reports') || '[]');
-  events  = JSON.parse(localStorage.getItem('council-events')  || '[]');
+async function loadAll() {
+  if (!currentUser) return;
+  const { data, error } = await sb.from('app_data').select('key,value').eq('user_id', currentUser.id);
+  if (error) {
+    console.error('클라우드 불러오기 오류:', error);
+    toast('⚠️ 클라우드 연결 실패 - 로컬 데이터 사용');
+    tasks  = JSON.parse(localStorage.getItem('council-tasks')  || '[]');
+    notes  = JSON.parse(localStorage.getItem('council-notes')  || '[]');
+    events = JSON.parse(localStorage.getItem('council-events') || '[]');
+    return;
+  }
+  const map = {};
+  (data || []).forEach(r => map[r.key] = r.value);
+  tasks  = map.tasks  || [];
+  notes  = map.notes  || [];
+  events = map.events || [];
+}
+
+// 기존 로컬 데이터를 클라우드로 1회 이전
+async function migrateIfNeeded() {
+  const { data } = await sb.from('app_data').select('key').eq('user_id', currentUser.id).limit(1);
+  if (data && data.length > 0) return; // 이미 클라우드 데이터 있음
+  const lsTasks  = JSON.parse(localStorage.getItem('council-tasks')  || '[]');
+  const lsNotes  = JSON.parse(localStorage.getItem('council-notes')  || '[]');
+  const lsEvents = JSON.parse(localStorage.getItem('council-events') || '[]');
+  if (lsTasks.length || lsNotes.length || lsEvents.length) {
+    tasks = lsTasks; notes = lsNotes; events = lsEvents;
+    await saveAll();
+    toast('✓ 기존 데이터를 클라우드로 이전했습니다');
+  }
 }
 
 // ── 날짜 유틸 ─────────────────────────────────
@@ -1774,11 +1842,42 @@ function deleteNote(id) {
   renderNotes();
 }
 
-// ── 초기화 ────────────────────────────────────
+// ── 인증 & 초기화 ─────────────────────────────
 
-loadAll();
-const _initPage = localStorage.getItem('council-page') || 'dashboard';
-goto(_initPage);
+async function startApp() {
+  document.getElementById('login-screen').style.display = 'none';
+  await migrateIfNeeded();
+  await loadAll();
+  const _initPage = localStorage.getItem('council-page') || 'dashboard';
+  goto(_initPage);
+}
+
+async function checkAuth() {
+  const { data: { session } } = await sb.auth.getSession();
+  if (session) {
+    currentUser = session.user;
+    await startApp();
+  }
+}
+
+async function doLogin() {
+  const email    = document.getElementById('login-email').value.trim();
+  const password = document.getElementById('login-password').value;
+  const errEl    = document.getElementById('login-error');
+  errEl.textContent = '';
+  if (!email || !password) { errEl.textContent = '이메일과 비밀번호를 입력하세요'; return; }
+  const { data, error } = await sb.auth.signInWithPassword({ email, password });
+  if (error) { errEl.textContent = '로그인 실패: 이메일/비밀번호를 확인하세요'; return; }
+  currentUser = data.user;
+  await startApp();
+}
+
+async function doLogout() {
+  await sb.auth.signOut();
+  location.reload();
+}
+
+checkAuth();
 
 function updateClock() {
   const now  = new Date();
